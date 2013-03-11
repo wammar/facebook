@@ -8,65 +8,140 @@
 #include <cstdio>
 #include <vector>
 #include <map>
+#include <assert.h>
 using namespace std;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////
-
-// Computes edit distance between a null-terminated string "a" with length "na"
-//  and a null-terminated string "b" with length "nb" 
-int EditDistance(char* a, int na, char* b, int nb)
-{
-	int oo=0x7FFFFFFF;
-
-	static int T[2][MAX_WORD_LENGTH+1];
-
-	int ia, ib;
-
-	int cur=0;
-	ia=0;
-
-	for(ib=0;ib<=nb;ib++)
-		T[cur][ib]=ib;
-
-	cur=1-cur;
-
-	for(ia=1;ia<=na;ia++)
+class EditDistanceCache {
+ private:
+  // Computes edit distance between a null-terminated string "a" with length "na"
+  //  and a null-terminated string "b" with length "nb" 
+  int EditDistance(const char* a, int na, const char* b, int nb)
+  {
+    int oo=0x7FFFFFFF;
+    
+    static int T[2][MAX_WORD_LENGTH+1];
+    
+    int ia, ib;
+    
+    int cur=0;
+    ia=0;
+    
+    for(ib=0;ib<=nb;ib++) {
+      T[cur][ib]=ib;
+    }
+    cur=1-cur;
+    for(ia=1;ia<=na;ia++) {
+      for(ib=0;ib<=nb;ib++) {
+	T[cur][ib]=oo;
+      }
+      
+      int ib_st=0;
+      int ib_en=nb;
+      
+      if(ib_st==0)
 	{
-		for(ib=0;ib<=nb;ib++)
-			T[cur][ib]=oo;
-
-		int ib_st=0;
-		int ib_en=nb;
-
-		if(ib_st==0)
-		{
-			ib=0;
-			T[cur][ib]=ia;
-			ib_st++;
-		}
-
-		for(ib=ib_st;ib<=ib_en;ib++)
-		{
-			int ret=oo;
-
-			int d1=T[1-cur][ib]+1;
-			int d2=T[cur][ib-1]+1;
-			int d3=T[1-cur][ib-1]; if(a[ia-1]!=b[ib-1]) d3++;
-
-			if(d1<ret) ret=d1;
-			if(d2<ret) ret=d2;
-			if(d3<ret) ret=d3;
-
-			T[cur][ib]=ret;
-		}
-
-		cur=1-cur;
+	  ib=0;
+	  T[cur][ib]=ia;
+	  ib_st++;
 	}
+      
+      for(ib=ib_st;ib<=ib_en;ib++)
+	{
+	  int ret=oo;
+	  
+	  int d1=T[1-cur][ib]+1;
+	  int d2=T[cur][ib-1]+1;
+	  int d3=T[1-cur][ib-1]; if(a[ia-1]!=b[ib-1]) d3++;
+	  
+	  if(d1<ret) ret=d1;
+	  if(d2<ret) ret=d2;
+	  if(d3<ret) ret=d3;
+	  
+	  T[cur][ib]=ret;
+	}
+      
+      cur=1-cur;
+    }
+    unsigned int ret=T[1-cur][nb];
+    return ret;
+  }
 
-	int ret=T[1-cur][nb];
+  // the actual cache.  semantics: map< pair<first_string, second_stering> , pair<edit_distance, importance> >
+  map< pair<string, string> , pair<unsigned, unsigned> > pairToEditDistance;
+  vector< pair<string, string> > uselessPairs;
+  
+  // keeps track of most recent pairs looked up
+  unsigned MAX_CACHE_SIZE;
+  
+  // diagnostics
+  int cacheMisses, cacheHits;
 
-	return ret;
-}
+
+ public:
+  EditDistanceCache() : MAX_CACHE_SIZE(500000), cacheMisses(0), cacheHits(0) {
+    for(int i = 0; i < MAX_CACHE_SIZE/1000; i++) {
+      stringstream x;
+      x << i;
+      for(int j = 0; j < 1000; j++) {
+        stringstream y;
+	y << j;
+	pairToEditDistance[make_pair(x.str(), y.str())] = make_pair(0,1);
+      }
+    }
+    uselessPairs.reserve(MAX_CACHE_SIZE);
+    cerr << "useless pairs started with size " << uselessPairs.size() << endl;
+    cerr << "a new EditDistanceCache object has been instantiated." << endl;
+  }
+
+  unsigned Lookup(string &x, string &y) {
+    // look up the cache
+    pair<string, string> p(x, y);
+    map< pair<string, string>, pair<unsigned, unsigned> >::iterator resultIter = pairToEditDistance.find(p);
+    unsigned dist = 0;
+    // did you find it?
+    if(resultIter == pairToEditDistance.end()) {
+      // no!
+      cacheMisses++;
+      // if the cache grows too large, clean it up by removing all pairs with importance == 1, and reducing the importance of all other pairs by 1
+      if(pairToEditDistance.size() >= MAX_CACHE_SIZE) {
+	// find useless pairs if needed
+	if(uselessPairs.size() == 0) {
+	  cerr << "uselessPairs is empty. finding more useless pairs... ";
+	  for(map< pair<string, string>, pair<unsigned, unsigned> >::iterator cacheIter = pairToEditDistance.begin();
+	      cacheIter != pairToEditDistance.end(); 
+	      cacheIter++) {
+	    // see if this entry in the cache is important
+	    if(--(cacheIter->second.second) == 0) {
+	      // yes, keep it in the new cache
+	      //	    recentlyUsedCache[cacheIter->first] = cacheIter->second;
+	      uselessPairs.push_back(cacheIter->first);
+	    }
+	  }
+	  cerr << "uselessPairs.size() = " << uselessPairs.size() << endl;
+	}
+	assert(uselessPairs.size() > 0);
+	// now remove one of the useless pairs to make room for the new pair
+	pairToEditDistance.erase(uselessPairs.back());
+	uselessPairs.pop_back();
+      }
+      // pair not in cache, compute edit distance and add it to cache
+      pair<unsigned, unsigned> resultsPair = make_pair((unsigned) EditDistance(x.data(), x.size(), y.data(), y.size()), (unsigned) 1);
+      dist = resultsPair.first;
+      pairToEditDistance[p] = resultsPair;
+    } else {
+      cacheHits++;
+      resultIter->second.second++;
+      dist = resultIter->second.first;
+    }
+    // diagnostics
+    if((cacheHits + cacheMisses) % 10000000 == 0) {
+      cerr << "cacheHits = " << cacheHits << endl;
+      cerr << "cacheMisses = " << cacheMisses << endl << endl;
+    }
+    return (unsigned) dist;
+  }
+} cache;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -279,7 +354,7 @@ ErrorCode EndQuery(QueryID query_id)
 map<QueryID, Query>::iterator qIT = queries.find(query_id);
 
 Query q = qIT->second;
-unsigned int index;
+//unsigned int index;
 
 if(q.match_type == MT_EXACT_MATCH )
 for(unsigned int i=0;i<q.keywords.size(); i++)
@@ -443,7 +518,7 @@ ErrorCode MatchDocument(DocID doc_id, const char* doc_str)
 
         if((it->second.editQ[0].size() + it->second.editQ[1].size() + it->second.editQ[2].size()) > 0)
          {
-                int edit = EditDistance(const_cast<char *>(it->second.myWord.data()), it->second.myWord.size(), const_cast<char *>(documentWords[i].data()), documentWords[i].size());
+	   int edit = cache.Lookup(it->second.myWord, documentWords[i]);
          	
 		
 //                if( debug && !it->second.myWord.compare("airlines") ) 
@@ -500,7 +575,7 @@ ErrorCode MatchDocument(DocID doc_id, const char* doc_str)
 		mydoc.query_ids=(unsigned int*)malloc(mydoc.num_res*sizeof(unsigned int));
         
 
-	for(int i=0;i<mydoc.num_res;i++) 
+	for(unsigned int i=0;i<mydoc.num_res;i++) 
 		mydoc.query_ids[i]=mydoc.finalResult[i];
         
 	mydoc.finalResult.clear();
